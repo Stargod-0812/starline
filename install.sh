@@ -122,7 +122,7 @@ ${BD}starline installed.${RS}
   Cache:               ${XDG_CACHE_HOME:-$HOME/.cache}/starline
   Prices:              $STARLINE_ROOT/lib/prices.json
 
-Open a new Claude Code session — the 4-line statusline will appear at the
+Open a new Claude Code session — the 3-line statusline will appear at the
 bottom of the UI. The numbers warm up after the first cache cycle (~90s).
 
 Next steps:

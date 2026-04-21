@@ -26,7 +26,13 @@ CODEX_USAGE_BIN="${CODEX_USAGE_BIN:-$(command -v ccusage-codex || true)}"
 # Colors (tput-compatible ANSI). Keep definitions inline so the script has
 # zero sourcing dependencies and renders the same in every terminal.
 RS='\033[0m'; DM='\033[2m'; BD='\033[1m'; WH='\033[97m'
-GN='\033[32m'; YL='\033[33m'; RD='\033[31m'
+# Status colours — 256-colour bright variants chosen to stay clearly distinct
+# from the Claude orange (214) and Codex blue (39) brand colours below.
+# Using the standard 8-colour green/yellow/red (32/33/31) makes the yellow
+# read as olive and collide visually with the orange brand label.
+GN='\033[38;5;82m'   # lime green — for "plenty remaining"
+YL='\033[38;5;220m'  # bright gold yellow — "pace yourself"
+RD='\033[38;5;196m'  # saturated red — "about to throttle"
 CA='\033[38;5;214m'  # Claude orange
 CB='\033[38;5;39m'   # Codex blue
 S="$DM · $RS"
@@ -275,33 +281,39 @@ add_codex() {
   if [ -z "$codex_parts" ]; then codex_parts="$1"; else codex_parts="${codex_parts}${S}$1"; fi
 }
 
+# Colour hierarchy on this line:
+#   brand (Claude orange / Codex blue) — identity, on the prefix only
+#   dim — structural labels (5h / 7d / mo) and separators
+#   state (green/yellow/red) — percentages; the data the user acts on
+#   brand — the "mo $N" dollar figure (because it's a Claude-related $)
+
 if [ -n "$R5" ] && [ "$R5" != '""' ]; then
   r5u=${R5%%.*}; r5_left=$((100 - r5u))
   [ "$r5_left" -lt 0 ] && r5_left=0
   [ "$r5_left" -gt 100 ] && r5_left=100
-  add_claude "${CA}5h${RS} $(cc_left "$r5_left")${r5_left}%${RS}"
+  add_claude "${DM}5h${RS} $(cc_left "$r5_left")${r5_left}%${RS}"
 fi
 if [ -n "$R7" ] && [ "$R7" != '""' ]; then
   r7u=${R7%%.*}; r7_left=$((100 - r7u))
   [ "$r7_left" -lt 0 ] && r7_left=0
   [ "$r7_left" -gt 100 ] && r7_left=100
-  add_claude "${CA}7d${RS} $(cc_left "$r7_left")${r7_left}%${RS}"
+  add_claude "${DM}7d${RS} $(cc_left "$r7_left")${r7_left}%${RS}"
 fi
 if [ -n "$claude_month" ] && is_positive "$claude_month"; then
-  add_claude "${CA}mo $(fshort "$claude_month")${RS}"
+  add_claude "${DM}mo${RS} ${CA}$(fshort "$claude_month")${RS}"
 fi
 
 if [ -n "$X5" ] && [ "$X5" != '""' ]; then
   x5u=${X5%%.*}; x5_left=$((100 - x5u))
   [ "$x5_left" -lt 0 ] && x5_left=0
   [ "$x5_left" -gt 100 ] && x5_left=100
-  add_codex "${CB}5h${RS} $(cc_left "$x5_left")${x5_left}%${RS}"
+  add_codex "${DM}5h${RS} $(cc_left "$x5_left")${x5_left}%${RS}"
 fi
 if [ -n "$X7P" ] && [ "$X7P" != '""' ]; then
   x7u=${X7P%%.*}; x7_left=$((100 - x7u))
   [ "$x7_left" -lt 0 ] && x7_left=0
   [ "$x7_left" -gt 100 ] && x7_left=100
-  add_codex "${CB}7d${RS} $(cc_left "$x7_left")${x7_left}%${RS}"
+  add_codex "${DM}7d${RS} $(cc_left "$x7_left")${x7_left}%${RS}"
 fi
 
 claude_block=""

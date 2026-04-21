@@ -225,22 +225,28 @@ R7R=$(json_value "$input" '.rate_limits.seven_day.resets_at' '""')
 X5=$(json_value "$XR" '.five_hour.used_percent' '""')
 X7P=$(json_value "$XR" '.seven_day.used_percent' '""')
 
-# Claude weekly window cost — used to project monthly-equivalent API spend
-# for the Claude subscription. Anchored to the reset_at boundary that the
-# Claude Code API advertises in its session payload.
+# Claude weekly window cost — used to project the monthly-equivalent API
+# spend for the Claude subscription.
+#
+# IMPORTANT: we anchor the window to a FIXED "now − 7×24h" rather than to
+# Anthropic's rate_limits.seven_day.resets_at. That reset_at marks the end
+# of the Claude *rolling* window — which means if the user has gone idle
+# for a few days, the oldest in-window burn has already aged out and the
+# effective window start creeps toward now. That undercounts real 7-day
+# spend by up to ~6×, making the `mo` projection read 1/6 of its actual
+# ceiling.
+#
+# Fixed "now − 7d" gives a stable, intuitive 7-day window that matches
+# what `ccusage daily --since 7days_ago` reports.
+#
+# Cache key is quantised to the hour so the JSON cache stays warm inside
+# a 1-hour band without constantly invalidating on a moving cws.
 WEEK_SECS=604800
-CW='{}'
-case "$R7R" in
-  ''|*[^0-9]*) ;;
-  *)
-    cws=$((R7R - WEEK_SECS))
-    if [ "$cws" -gt 0 ]; then
-      CW=$(gc_json "claude_window_${cws}" 300 \
-        "node \"$STARLINE_LIB/claude_window.mjs\" $cws 0" \
-        "node \"$STARLINE_LIB/claude_window.mjs\" $cws 1")
-    fi
-    ;;
-esac
+NOW=$(date +%s)
+cws=$(( (NOW / 3600) * 3600 - WEEK_SECS ))
+CW=$(gc_json "claude_window_${cws}" 600 \
+  "node \"$STARLINE_LIB/claude_window.mjs\" $cws 0" \
+  "node \"$STARLINE_LIB/claude_window.mjs\" $cws 1")
 
 cct=$(json_value "$CT" '.totals.totalCost' '0')
 cxt=$(json_value "$XT" '.totals.costUSD' '0')

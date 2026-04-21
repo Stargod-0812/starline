@@ -1,10 +1,10 @@
 class Starline < Formula
   desc "Claude Code + Codex cost & quota statusline"
-  homepage "https://github.com/liaoruoxing/starline"
-  url "https://github.com/liaoruoxing/starline/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/Stargod-0812/starline"
+  url "https://github.com/Stargod-0812/starline/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "REPLACE_WITH_TARBALL_SHA256_ON_RELEASE"
   license "MIT"
-  head "https://github.com/liaoruoxing/starline.git", branch: "main"
+  head "https://github.com/Stargod-0812/starline.git", branch: "main"
 
   depends_on "jq"
   depends_on "node"

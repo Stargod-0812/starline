@@ -21,7 +21,7 @@ fi
 if [ -z "${STARLINE_ROOT:-}" ] || [ ! -f "$STARLINE_ROOT/statusline/statusline.sh" ]; then
   # Piped via `curl | bash` — clone to a stable location and re-exec.
   CLONE_DEST="${STARLINE_CLONE_DEST:-$HOME/.local/share/starline}"
-  STARLINE_REPO_URL="${STARLINE_REPO_URL:-https://github.com/liaoruoxing/starline}"
+  STARLINE_REPO_URL="${STARLINE_REPO_URL:-https://github.com/Stargod-0812/starline}"
   mkdir -p "$(dirname "$CLONE_DEST")"
   if [ -d "$CLONE_DEST/.git" ]; then
     printf 'starline: updating existing checkout at %s\n' "$CLONE_DEST"

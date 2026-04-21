@@ -1,20 +1,21 @@
 # starline
 
-**Claude Code + Codex cost & quota statusline.** One 4-line bar at the bottom of every Claude Code session that tells you, at a glance:
+**Claude Code + Codex cost & quota statusline.** A 3-line bar at the bottom of every Claude Code session that tells you, at a glance:
 
-- what you've spent today and this month across *both* tools
-- how much 5-hour and weekly quota is left on each
-- what your Claude subscription is worth in pay-as-you-go dollars right now
-- current session model, burn, and context window
+- today's spend, split by tool, with the 30-day total hanging on the right
+- 5-hour and 7-day quota **remaining** on each tool (not used — remaining, so you can act on it)
+- an API-equivalent monthly cost projection for your Claude subscription
+- current session model, burn, duration, and context window
 
 Built for engineers who run Claude Code and Codex in parallel sessions and want to know, without opening a browser, whether this week's quota will hold.
 
 ```
-TODAY  · Claude $12.40 · Codex $8.70   =  $21.10
-30 DAY · Claude $512.80 · Codex $471.20   =  $984.00  API equivalent
-QUOTA  · Claude 5h 22% · Codex 5h 38% · Claude 1w 63% · Codex 1w 84% · Claude month $19.5k
-Opus 4.7 · session $0.12 · 7m   ━━━━━━──────────  43%  of 1M
+TODAY  Claude $12.40 · Codex $8.70  =  $21.10       30D $984 API-eq
+Claude 5h 78% · 7d 63% · mo $19.5k        Codex 5h 62% · 7d 16%
+Opus 4.7 · session $0.12 · 7m   ━━━━━━──────────  43% of 1M
 ```
+
+All quota percentages are **remaining**. Colour threshold: green > 50%, yellow 20–50%, red ≤ 20%. A red number means that window is about to throttle.
 
 ---
 
@@ -61,18 +62,21 @@ Works on macOS and Linux. Windows not supported (Claude Code statusline is POSIX
 
 ---
 
-## The four lines, annotated
+## The three lines, annotated
 
 | Line | Content | Source |
 |------|---------|--------|
-| 1 | Today's Claude + Codex spend, separate and summed | `ccusage daily` + direct Codex jsonl parse |
-| 2 | Trailing 30-day Claude + Codex spend, labelled "API equivalent" | same, 30-day window |
-| 3 | `Claude 5h` / `Codex 5h` remaining, `1w` remaining, projected monthly Claude API cost | Claude Code session payload + Codex `rate_limits` on every event |
-| 4 | Session model · session cost · session duration · context-window bar | Claude Code session payload (stdin) |
+| 1 | Today's Claude + Codex spend (separate and summed) · 30-day API-equivalent total on the right | `ccusage daily` + direct Codex jsonl parse |
+| 2 | Quota remaining per window, grouped by tool: `Claude 5h · 7d · mo` ⏵⏵⏵ `Codex 5h · 7d` | Claude Code session payload + Codex `rate_limits` on every token_count event |
+| 3 | Session model · session cost · session duration · context-window bar | Claude Code session payload (stdin) |
 
-**"API equivalent" means**: if you were paying pay-as-you-go at the vendor's per-token rates, this is what the last N days would have cost. Measured against your Claude/Codex subscription, it's the concrete dollar-value you're getting.
+**Why percentages are "remaining" not "used"**: the question the user asks a statusline is always *"can I keep going?"* not *"how much did I already spend?"*. Remaining is the decision variable; used is a post-hoc report. Colour aligns the same way — red means "you're about to run out", green means "plenty left".
 
-**"Claude month $X"** is `current-week spend ÷ current-week quota-used × 4`. It's a linear extrapolation, not a forecast — assumes you keep burning at your current 7-day rate.
+**"5h" and "7d"** are the Anthropic `rate_limits.five_hour` / `rate_limits.seven_day` rolling-window fields (and Codex's equivalent `primary` / `secondary`). Displayed verbatim so you can cross-check against the vendor's docs without mental translation.
+
+**"mo $X" (Claude only)** is a projection, not an actual. It's `claude-weekly-spend ÷ claude-weekly-quota-used × 4` — i.e. "if you keep burning at this week's rate, what's your monthly API-equivalent cost?". Use it to decide whether a subscription bump is worth it. There's no Codex equivalent because Codex's weekly-quota field is updated coarsely (per event only), making per-week spend harder to anchor.
+
+**"API equivalent"** on line 1 means: at vendor pay-as-you-go rates, this is what those 30 days would have cost. Compare against your subscription fee to see the dollar-value you're getting.
 
 ---
 

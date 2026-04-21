@@ -164,6 +164,10 @@ fd() {
 
 cc() { [ "${1:-0}" -lt 50 ] && echo "$GN" || { [ "${1:-0}" -lt 80 ] && echo "$YL" || echo "$RD"; }; }
 
+# cc_left: colour a quota-remaining percentage. > 50 green, > 20 yellow, else red.
+# Mirror of cc() but inverted for "left" semantics (the higher the better).
+cc_left() { [ "${1:-0}" -gt 50 ] && echo "$GN" || { [ "${1:-0}" -gt 20 ] && echo "$YL" || echo "$RD"; }; }
+
 bar() {
   local p="${1:-0}" fl em i
   [ "$p" -lt 0 ] && p=0; [ "$p" -gt 100 ] && p=100
@@ -241,58 +245,84 @@ tt=$(money_sum "$cct" "$cxt")
 t3=$(money_sum "$cc3" "$cx3")
 
 # -- render ----------------------------------------------------------------
+#
+# Three lines:
+#   L1 — today (Claude + Codex, summed) with 30-day total hanging on the right
+#   L2 — quota: Claude {5h · 7d · mo} gap Codex {5h · 7d}, all shown as REMAINING
+#   L3 — session: model, duration, context bar
+#
+# Quota semantics are uniformly "left" (remaining). 5h and 7d are the API
+# field names from Anthropic's rate_limits object (five_hour / seven_day)
+# — we display them matched so the user can cross-reference without
+# mental arithmetic. "mo" is an API-equivalent monthly projection driven
+# by the 7-day rolling spend and remaining quota.
 
-# Line 1: Today
-L1="${BD}${WH}TODAY${RS}${S}${CA}Claude $(f "$cct")${RS}${S}${CB}Codex $(f "$cxt")${RS}  ${DM}=${RS}  ${BD}${WH}$(f "$tt")${RS}"
+# L1 — today + 30d on one line
+L1="${BD}${WH}TODAY${RS}  ${CA}Claude $(f "$cct")${RS}${S}${CB}Codex $(f "$cxt")${RS}  ${DM}=${RS}  ${BD}${WH}$(f "$tt")${RS}       ${DM}30D $(f "$t3") API-eq${RS}"
 
-# Line 2: 30-day
-L2="${DM}30 DAY${RS}${S}${CA}Claude $(f "$cc3")${RS}${S}${CB}Codex $(f "$cx3")${RS}  ${DM}=${RS}  ${BD}$(f "$t3")${RS} ${DM}API equivalent${RS}"
-
+# L2 — quota, split by brand, all percentages read as remaining
 claude_month=""
-q5c=""; q5x=""; q1c=""; q1x=""; q4c=""; q4x=""
-
 if [ -n "$R7" ] && [ "$R7" != '""' ] && is_positive "$ccw"; then
   claude_month=$(money_project_periods "$ccw" "$R7" 4)
 fi
 
-if [ -n "$R5" ] && [ "$R5" != '""' ]; then
-  r5i=${R5%%.*}
-  q5c="${S}${CA}Claude 5h ${r5i}%${RS}"
-fi
+claude_parts=""
+add_claude() {
+  if [ -z "$claude_parts" ]; then claude_parts="$1"; else claude_parts="${claude_parts}${S}$1"; fi
+}
+codex_parts=""
+add_codex() {
+  if [ -z "$codex_parts" ]; then codex_parts="$1"; else codex_parts="${codex_parts}${S}$1"; fi
+}
 
+if [ -n "$R5" ] && [ "$R5" != '""' ]; then
+  r5u=${R5%%.*}; r5_left=$((100 - r5u))
+  [ "$r5_left" -lt 0 ] && r5_left=0
+  [ "$r5_left" -gt 100 ] && r5_left=100
+  add_claude "${CA}5h${RS} $(cc_left "$r5_left")${r5_left}%${RS}"
+fi
 if [ -n "$R7" ] && [ "$R7" != '""' ]; then
   r7u=${R7%%.*}; r7_left=$((100 - r7u))
   [ "$r7_left" -lt 0 ] && r7_left=0
   [ "$r7_left" -gt 100 ] && r7_left=100
-  q1c="${S}${CA}Claude 1w ${r7_left}%${RS}"
+  add_claude "${CA}7d${RS} $(cc_left "$r7_left")${r7_left}%${RS}"
 fi
-
 if [ -n "$claude_month" ] && is_positive "$claude_month"; then
-  q4c="${S}${CA}Claude month $(fshort "$claude_month")${RS}"
+  add_claude "${CA}mo $(fshort "$claude_month")${RS}"
 fi
 
 if [ -n "$X5" ] && [ "$X5" != '""' ]; then
-  x5i=${X5%%.*}
-  q5x="${S}${CB}Codex 5h ${x5i}%${RS}"
+  x5u=${X5%%.*}; x5_left=$((100 - x5u))
+  [ "$x5_left" -lt 0 ] && x5_left=0
+  [ "$x5_left" -gt 100 ] && x5_left=100
+  add_codex "${CB}5h${RS} $(cc_left "$x5_left")${x5_left}%${RS}"
 fi
-
 if [ -n "$X7P" ] && [ "$X7P" != '""' ]; then
   x7u=${X7P%%.*}; x7_left=$((100 - x7u))
   [ "$x7_left" -lt 0 ] && x7_left=0
   [ "$x7_left" -gt 100 ] && x7_left=100
-  q1x="${S}${CB}Codex 1w ${x7_left}%${RS}"
+  add_codex "${CB}7d${RS} $(cc_left "$x7_left")${x7_left}%${RS}"
 fi
 
-L3="${DM}QUOTA${RS}${q5c}${q5x}${q1c}${q1x}${q4c}${q4x}"
-if [ -z "$q5c$q5x$q1c$q1x$q4c$q4x" ]; then
-  L3="${L3}${S}${DM}waiting for rate data${RS}"
+claude_block=""
+codex_block=""
+[ -n "$claude_parts" ] && claude_block="${BD}${CA}Claude${RS} ${claude_parts}"
+[ -n "$codex_parts" ]  && codex_block="${BD}${CB}Codex${RS} ${codex_parts}"
+
+if [ -n "$claude_block" ] && [ -n "$codex_block" ]; then
+  L2="${claude_block}        ${codex_block}"
+elif [ -n "$claude_block" ]; then
+  L2="$claude_block"
+elif [ -n "$codex_block" ]; then
+  L2="$codex_block"
+else
+  L2="${DM}waiting for rate data${RS}"
 fi
 
-# Line 4: Session
+# L3 — session
 CL="200k"; [ "$CS" -ge 1000000 ] && CL="1M"
-L4="${BD}${CA}${MO}${RS}${S}${DM}session${RS} $(f "$SC")${S}${DM}$(fd "$DU")${RS}  $(bar "$CP") $(cc "$CP")${CP}%${RS} ${DM}of $CL${RS}"
+L3="${BD}${CA}${MO}${RS}${S}${DM}session${RS} $(f "$SC")${S}${DM}$(fd "$DU")${RS}  $(bar "$CP") $(cc "$CP")${CP}%${RS} ${DM}of $CL${RS}"
 
 echo -e "$L1"
 echo -e "$L2"
 echo -e "$L3"
-echo -e "$L4"

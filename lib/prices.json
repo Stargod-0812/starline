@@ -1,0 +1,31 @@
+{
+  "$schema_version": "1",
+  "updated_at": "2026-04-21",
+  "units": "USD per 1M tokens",
+  "sources": {
+    "openai": "https://platform.openai.com/docs/pricing",
+    "anthropic": "https://www.anthropic.com/pricing#anthropic-api",
+    "note": "ccusage handles Claude pricing via its embedded pricing loader. This file only covers Codex-side models parsed directly from ~/.codex/sessions/*.jsonl."
+  },
+  "disclaimer": "Prices below were imported from the legacy ~/.claude/statusline.sh. Forward-looking model IDs (gpt-5.2 / gpt-5.3 / gpt-5.4-pro) were present in the source and are preserved for backward-compat. Re-verify against the vendor pricing page before trusting absolute dollar figures. starline's value is the RELATIVE trend across a week, not the penny-accurate invoice.",
+  "models": {
+    "gpt-5":                     { "input": 1.25, "cache": 0.125, "output": 10,   "verified": false },
+    "gpt-5-codex":               { "input": 1.25, "cache": 0.125, "output": 10,   "verified": false },
+    "gpt-5.1-codex":             { "input": 1.25, "cache": 0.125, "output": 10,   "verified": false },
+    "gpt-5.1-codex-max":         { "input": 1.25, "cache": 0.125, "output": 10,   "verified": false },
+    "gpt-5.1-codex-mini":        { "input": 0.25, "cache": 0.025, "output": 2,    "verified": false },
+    "gpt-5.2":                   { "input": 1.75, "cache": 0.175, "output": 14,   "verified": false },
+    "gpt-5.2-codex":             { "input": 1.75, "cache": 0.175, "output": 14,   "verified": false },
+    "gpt-5.3-codex":             { "input": 1.75, "cache": 0.175, "output": 14,   "verified": false },
+    "gpt-5.4":                   { "input": 2.5,  "cache": 0.25,  "output": 15,   "verified": false },
+    "gpt-5.4-2026-03-05":        { "input": 2.5,  "cache": 0.25,  "output": 15,   "verified": false },
+    "gpt-5.4-pro":               { "input": 30,   "cache": 3,     "output": 180,  "verified": false },
+    "gpt-5.4-pro-2026-03-05":    { "input": 30,   "cache": 3,     "output": 180,  "verified": false }
+  },
+  "aliases": {
+    "gpt-5.3-chat-latest": "gpt-5",
+    "gpt-5.2-chat-latest": "gpt-5",
+    "gpt-5.3-codex":       "gpt-5.2-codex"
+  },
+  "prefix_strip": ["openai/"]
+}

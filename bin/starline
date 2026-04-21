@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# starline — dispatcher. See README.md for usage.
+
+set -euo pipefail
+
+STARLINE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export STARLINE_ROOT
+
+usage() {
+  cat <<EOF
+starline — Claude Code + Codex cost & quota statusline
+
+Usage:
+  starline install            Wire up ~/.claude/settings.json (idempotent).
+  starline uninstall          Remove from ~/.claude/settings.json. Restores backup.
+  starline doctor             Diagnose the install: node, ccusage, paths, sample parse.
+  starline explain [--today]  Per-session/per-model cost breakdown for audit.
+  starline render             Render the 4-line statusline once (reads stdin JSON).
+  starline version            Print the installed version.
+  starline help               This help.
+
+Environment overrides:
+  CCUSAGE_BIN         Path to ccusage binary (default: \$(command -v ccusage))
+  CODEX_USAGE_BIN     Path to ccusage-codex binary
+  CCUSAGE_LOADER      Path to ccusage data-loader-*.js (auto-resolved by default)
+  STARLINE_CACHE      Cache directory (default: \${XDG_CACHE_HOME:-\$HOME/.cache}/starline)
+  STARLINE_PRICES     Override prices.json path
+EOF
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  install)    exec "$STARLINE_ROOT/install.sh" "$@" ;;
+  uninstall)  exec "$STARLINE_ROOT/uninstall.sh" "$@" ;;
+  doctor)     exec "$STARLINE_ROOT/scripts/doctor.sh" "$@" ;;
+  explain)    exec node "$STARLINE_ROOT/scripts/explain.mjs" "$@" ;;
+  render)     exec "$STARLINE_ROOT/statusline/statusline.sh" "$@" ;;
+  version|-v|--version)
+    cat "$STARLINE_ROOT/VERSION"
+    ;;
+  help|-h|--help) usage ;;
+  *)
+    printf 'starline: unknown command "%s"\n\n' "$cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

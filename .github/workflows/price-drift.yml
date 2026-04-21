@@ -1,0 +1,52 @@
+name: price-drift
+
+on:
+  schedule:
+    - cron: "0 13 * * 1"   # every Monday 13:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Snapshot prices.json before check
+        id: snapshot
+        run: |
+          cp lib/prices.json /tmp/prices.before.json
+          echo "sha=$(sha256sum lib/prices.json | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Run drift check
+        run: node scripts/price_drift_check.mjs || true
+
+      - name: Create PR if prices changed
+        run: |
+          if ! cmp -s lib/prices.json /tmp/prices.before.json; then
+            echo "Price drift detected. Opening PR."
+          else
+            echo "No drift."
+            exit 0
+          fi
+        id: drift
+
+      - uses: peter-evans/create-pull-request@v6
+        if: steps.drift.outcome == 'success'
+        with:
+          branch: price-drift/auto
+          commit-message: "chore: auto-sync vendor pricing"
+          title: "chore: vendor price drift detected"
+          body: |
+            The weekly price-drift check detected a difference between the
+            committed `lib/prices.json` and vendor pricing pages.
+
+            Review the diff, verify against the linked vendor docs, flip
+            affected models' `verified` flag to `true` if confirmed, and
+            merge.

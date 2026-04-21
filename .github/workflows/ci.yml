@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install jq (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Verify prices.json parses
+        run: node -e "JSON.parse(require('fs').readFileSync('lib/prices.json', 'utf8'))"
+
+      - name: Run unit + integration tests
+        run: node --test test/*.mjs
+
+      - name: Smoke-render statusline
+        env:
+          STARLINE_ROOT: ${{ github.workspace }}
+        run: |
+          chmod +x statusline/statusline.sh bin/starline install.sh uninstall.sh scripts/doctor.sh
+          echo '{"model":{"display_name":"test"},"cost":{"total_cost_usd":0,"total_duration_ms":0},"context_window":{"used_percentage":0,"context_window_size":200000}}' \
+            | ./statusline/statusline.sh
+
+      - name: starline doctor --no-install
+        env:
+          STARLINE_ROOT: ${{ github.workspace }}
+        run: ./scripts/doctor.sh || true
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Run shellcheck (non-fatal advisory)
+        run: |
+          shellcheck --severity=warning \
+            statusline/statusline.sh \
+            install.sh uninstall.sh \
+            bin/starline \
+            scripts/doctor.sh \
+            || echo "::warning::shellcheck reported advisories"

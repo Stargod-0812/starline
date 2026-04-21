@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# starline — Claude Code + Codex cost & quota statusline.
+#
+# 4 lines:
+#   1. TODAY  — today's Claude + Codex spend (API-equivalent dollars)
+#   2. 30 DAY — trailing 30-day spend
+#   3. QUOTA  — 5h / 1w usage for Claude + Codex, projected monthly
+#   4. SESSION — current session model, cost, duration, context-bar
+#
+# Called by Claude Code via settings.json `statusLine.command`.
+# Reads the session JSON passed on stdin.
+
+set -u -o pipefail
+
+input=$(cat)
+
+STARLINE_ROOT="${STARLINE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+STARLINE_LIB="${STARLINE_LIB:-$STARLINE_ROOT/lib}"
+STARLINE_CACHE="${STARLINE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/starline}"
+mkdir -p "$STARLINE_CACHE"
+
+# Binaries — resolved once at top, overridable for non-standard node installs.
+CCUSAGE_BIN="${CCUSAGE_BIN:-$(command -v ccusage || true)}"
+CODEX_USAGE_BIN="${CODEX_USAGE_BIN:-$(command -v ccusage-codex || true)}"
+
+# Colors (tput-compatible ANSI). Keep definitions inline so the script has
+# zero sourcing dependencies and renders the same in every terminal.
+RS='\033[0m'; DM='\033[2m'; BD='\033[1m'; WH='\033[97m'
+GN='\033[32m'; YL='\033[33m'; RD='\033[31m'
+CA='\033[38;5;214m'  # Claude orange
+CB='\033[38;5;39m'   # Codex blue
+S="$DM · $RS"
+
+if [ "${STARLINE_CAPTURE_HOOK:-0}" = "1" ]; then
+  printf '%s' "$input" > "$STARLINE_CACHE/last-input.json"
+fi
+
+# -- helpers ---------------------------------------------------------------
+
+_resolve_timeout_cmd() {
+  if command -v timeout >/dev/null 2>&1; then
+    echo "timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    echo "gtimeout"
+  elif command -v perl >/dev/null 2>&1; then
+    echo "perl"
+  else
+    echo "none"
+  fi
+}
+STARLINE_TIMEOUT_CMD="$(_resolve_timeout_cmd)"
+
+timed_eval() {
+  local seconds="$1" cmd="$2"
+  case "$STARLINE_TIMEOUT_CMD" in
+    timeout|gtimeout) "$STARLINE_TIMEOUT_CMD" "$seconds" bash -lc "$cmd" ;;
+    perl) perl -e 'alarm shift; exec @ARGV' "$seconds" bash -lc "$cmd" ;;
+    none) bash -lc "$cmd" ;;
+  esac
+}
+
+json_value() {
+  local payload="$1" expr="$2" fallback="$3" value
+  value=$(printf '%s' "$payload" | jq -r "$expr // $fallback" 2>/dev/null | head -n 1)
+  if [ -n "$value" ]; then printf '%s' "$value"; else printf '%s' "$fallback"; fi
+}
+
+valid_json() { printf '%s' "$1" | jq -e . >/dev/null 2>&1; }
+
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+
+run_json() {
+  local primary="$1" fallback="$2" out="" timeout="${STARLINE_REFRESH_TIMEOUT:-45}"
+  out=$(timed_eval "$timeout" "$primary" 2>/dev/null || true)
+  if [ -n "$out" ] && valid_json "$out"; then printf '%s' "$out"; return; fi
+  out=$(timed_eval "$timeout" "$fallback" 2>/dev/null || true)
+  if [ -n "$out" ] && valid_json "$out"; then printf '%s' "$out"; return; fi
+  return 1
+}
+
+# Stale-while-revalidate cache. On hit returns cached value; on stale kicks
+# off a background refresh and still returns the stale value, so the shell
+# prompt never blocks on network calls. Hard TTL (5 × soft TTL) forces a
+# blocking refresh to bound staleness.
+refresh_cache_async() {
+  local file="$1" lock="$2" primary="$3" fallback="$4" stale_lock_secs="${5:-300}"
+  if [ -f "$lock" ] && [ $(( $(date +%s) - $(mtime "$lock") )) -ge "$stale_lock_secs" ]; then
+    rm -f "$lock"
+  fi
+  [ -f "$lock" ] && return
+  : > "$lock"
+  (
+    trap 'rm -f "$lock"' EXIT
+    local out
+    out=$(run_json "$primary" "$fallback")
+    if valid_json "$out"; then printf '%s' "$out" > "$file"; fi
+  ) >/dev/null 2>&1 &
+}
+
+gc_json() {
+  local key="$1" ttl="$2" primary="$3" fallback="$4" file lock now out age stale_lock_secs hard_ttl
+  file="$STARLINE_CACHE/$key"
+  lock="${file}.lock"
+  now=$(date +%s)
+  stale_lock_secs=$(( ttl > 300 ? ttl : 300 ))
+  hard_ttl=$(( ttl * 5 ))
+  [ "$hard_ttl" -lt 300 ] && hard_ttl=300
+
+  if [ -f "$lock" ] && [ $((now - $(mtime "$lock"))) -ge "$stale_lock_secs" ]; then
+    rm -f "$lock"
+  fi
+
+  if [ -f "$file" ]; then
+    age=$((now - $(mtime "$file")))
+    if [ "$age" -ge "$hard_ttl" ]; then
+      out=$(run_json "$primary" "$fallback")
+      if valid_json "$out"; then
+        printf '%s' "$out" > "$file"; printf '%s' "$out"; return
+      fi
+    elif [ "$age" -ge "$ttl" ]; then
+      refresh_cache_async "$file" "$lock" "$primary" "$fallback" "$stale_lock_secs"
+    fi
+    cat "$file"; return
+  fi
+  out=$(run_json "$primary" "$fallback")
+  if valid_json "$out"; then printf '%s' "$out" > "$file"; printf '%s' "$out"; return; fi
+  refresh_cache_async "$file" "$lock" "$primary" "$fallback" "$stale_lock_secs"
+  printf '{}'
+}
+
+# -- formatting helpers ----------------------------------------------------
+
+money_sum() {
+  awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN { printf "%.2f", (a + 0) + (b + 0) }'
+}
+
+money_project_periods() {
+  awk -v used="${1:-0}" -v pct="${2:-0}" -v periods="${3:-1}" 'BEGIN {
+    if ((pct + 0) <= 0) printf "0.00";
+    else printf "%.2f", (((used + 0) * 100) / (pct + 0)) * (periods + 0);
+  }'
+}
+
+f() { printf '$%.2f' "${1:-0}"; }
+
+fshort() {
+  awk -v v="${1:-0}" 'BEGIN {
+    abs = (v < 0 ? -v : v);
+    if (abs >= 1000000) printf "$%.1fm", v / 1000000;
+    else if (abs >= 1000) printf "$%.1fk", v / 1000;
+    else printf "$%.2f", v;
+  }'
+}
+
+is_positive() { awk -v v="${1:-0}" 'BEGIN { exit !((v + 0) > 0) }'; }
+
+fd() {
+  local ms="${1:-0}" s h m
+  s=$((ms / 1000)); h=$((s / 3600)); m=$(((s % 3600) / 60))
+  [ "$h" -gt 0 ] && { printf '%dh%dm' "$h" "$m"; return; }
+  [ "$m" -gt 0 ] && { printf '%dm' "$m"; return; }
+  printf '%ds' "$s"
+}
+
+cc() { [ "${1:-0}" -lt 50 ] && echo "$GN" || { [ "${1:-0}" -lt 80 ] && echo "$YL" || echo "$RD"; }; }
+
+bar() {
+  local p="${1:-0}" fl em i
+  [ "$p" -lt 0 ] && p=0; [ "$p" -gt 100 ] && p=100
+  fl=$((p * 16 / 100)); em=$((16 - fl))
+  printf '%b' "$(cc "$p")"
+  for ((i = 0; i < fl; i++)); do printf '━'; done
+  printf '%b' "$DM"
+  for ((i = 0; i < em; i++)); do printf '─'; done
+  printf '%b' "$RS"
+}
+
+# -- data fetch ------------------------------------------------------------
+
+TD=$(date +%Y%m%d)
+D30=$(date -v-30d +%Y%m%d 2>/dev/null || date -d '30 days ago' +%Y%m%d 2>/dev/null)
+
+# Graceful degradation when ccusage is missing: still render quota + session.
+CT='{}'; XT='{}'; C3='{}'; X3='{}'
+if [ -n "$CCUSAGE_BIN" ]; then
+  CT=$(gc_json "claude_today_${TD}" 90 \
+    "\"$CCUSAGE_BIN\" daily --json --breakdown --since $TD" \
+    "\"$CCUSAGE_BIN\" daily --json --breakdown --since $TD --offline")
+  C3=$(gc_json "claude_30d_${TD}" 600 \
+    "\"$CCUSAGE_BIN\" daily --json --breakdown --since $D30" \
+    "\"$CCUSAGE_BIN\" daily --json --breakdown --since $D30 --offline")
+fi
+if [ -n "$CODEX_USAGE_BIN" ]; then
+  XT=$(gc_json "codex_today_${TD}" 90 \
+    "\"$CODEX_USAGE_BIN\" daily --json --since $TD" \
+    "\"$CODEX_USAGE_BIN\" daily --json --since $TD --offline")
+  X3=$(gc_json "codex_30d_${TD}" 600 \
+    "\"$CODEX_USAGE_BIN\" daily --json --since $D30" \
+    "\"$CODEX_USAGE_BIN\" daily --json --since $D30 --offline")
+fi
+
+XR=$(gc_json "codex_rate_${TD}" 60 \
+  "node \"$STARLINE_LIB/codex_rate.mjs\" snapshot" \
+  "node \"$STARLINE_LIB/codex_rate.mjs\" snapshot")
+
+MO=$(json_value "$input" '.model.display_name' '"—"')
+SC=$(json_value "$input" '.cost.total_cost_usd' '0')
+DU=$(json_value "$input" '.cost.total_duration_ms' '0')
+CP=$(json_value "$input" '.context_window.used_percentage' '0')
+CP=${CP%%.*}
+CS=$(json_value "$input" '.context_window.context_window_size' '200000')
+R5=$(json_value "$input" '.rate_limits.five_hour.used_percentage' '""')
+R7=$(json_value "$input" '.rate_limits.seven_day.used_percentage' '""')
+R7R=$(json_value "$input" '.rate_limits.seven_day.resets_at' '""')
+X5=$(json_value "$XR" '.five_hour.used_percent' '""')
+X7P=$(json_value "$XR" '.seven_day.used_percent' '""')
+
+# Claude weekly window cost — used to project monthly-equivalent API spend
+# for the Claude subscription. Anchored to the reset_at boundary that the
+# Claude Code API advertises in its session payload.
+WEEK_SECS=604800
+CW='{}'
+case "$R7R" in
+  ''|*[^0-9]*) ;;
+  *)
+    cws=$((R7R - WEEK_SECS))
+    if [ "$cws" -gt 0 ]; then
+      CW=$(gc_json "claude_window_${cws}" 300 \
+        "node \"$STARLINE_LIB/claude_window.mjs\" $cws 0" \
+        "node \"$STARLINE_LIB/claude_window.mjs\" $cws 1")
+    fi
+    ;;
+esac
+
+cct=$(json_value "$CT" '.totals.totalCost' '0')
+cxt=$(json_value "$XT" '.totals.costUSD' '0')
+cc3=$(json_value "$C3" '.totals.totalCost' '0')
+cx3=$(json_value "$X3" '.totals.costUSD' '0')
+ccw=$(json_value "$CW" '.totalCost' '0')
+tt=$(money_sum "$cct" "$cxt")
+t3=$(money_sum "$cc3" "$cx3")
+
+# -- render ----------------------------------------------------------------
+
+# Line 1: Today
+L1="${BD}${WH}TODAY${RS}${S}${CA}Claude $(f "$cct")${RS}${S}${CB}Codex $(f "$cxt")${RS}  ${DM}=${RS}  ${BD}${WH}$(f "$tt")${RS}"
+
+# Line 2: 30-day
+L2="${DM}30 DAY${RS}${S}${CA}Claude $(f "$cc3")${RS}${S}${CB}Codex $(f "$cx3")${RS}  ${DM}=${RS}  ${BD}$(f "$t3")${RS} ${DM}API equivalent${RS}"
+
+claude_month=""
+q5c=""; q5x=""; q1c=""; q1x=""; q4c=""; q4x=""
+
+if [ -n "$R7" ] && [ "$R7" != '""' ] && is_positive "$ccw"; then
+  claude_month=$(money_project_periods "$ccw" "$R7" 4)
+fi
+
+if [ -n "$R5" ] && [ "$R5" != '""' ]; then
+  r5i=${R5%%.*}
+  q5c="${S}${CA}Claude 5h ${r5i}%${RS}"
+fi
+
+if [ -n "$R7" ] && [ "$R7" != '""' ]; then
+  r7u=${R7%%.*}; r7_left=$((100 - r7u))
+  [ "$r7_left" -lt 0 ] && r7_left=0
+  [ "$r7_left" -gt 100 ] && r7_left=100
+  q1c="${S}${CA}Claude 1w ${r7_left}%${RS}"
+fi
+
+if [ -n "$claude_month" ] && is_positive "$claude_month"; then
+  q4c="${S}${CA}Claude month $(fshort "$claude_month")${RS}"
+fi
+
+if [ -n "$X5" ] && [ "$X5" != '""' ]; then
+  x5i=${X5%%.*}
+  q5x="${S}${CB}Codex 5h ${x5i}%${RS}"
+fi
+
+if [ -n "$X7P" ] && [ "$X7P" != '""' ]; then
+  x7u=${X7P%%.*}; x7_left=$((100 - x7u))
+  [ "$x7_left" -lt 0 ] && x7_left=0
+  [ "$x7_left" -gt 100 ] && x7_left=100
+  q1x="${S}${CB}Codex 1w ${x7_left}%${RS}"
+fi
+
+L3="${DM}QUOTA${RS}${q5c}${q5x}${q1c}${q1x}${q4c}${q4x}"
+if [ -z "$q5c$q5x$q1c$q1x$q4c$q4x" ]; then
+  L3="${L3}${S}${DM}waiting for rate data${RS}"
+fi
+
+# Line 4: Session
+CL="200k"; [ "$CS" -ge 1000000 ] && CL="1M"
+L4="${BD}${CA}${MO}${RS}${S}${DM}session${RS} $(f "$SC")${S}${DM}$(fd "$DU")${RS}  $(bar "$CP") $(cc "$CP")${CP}%${RS} ${DM}of $CL${RS}"
+
+echo -e "$L1"
+echo -e "$L2"
+echo -e "$L3"
+echo -e "$L4"

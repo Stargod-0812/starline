@@ -76,7 +76,12 @@ valid_json() { printf '%s' "$1" | jq -e . >/dev/null 2>&1; }
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
 
 run_json() {
-  local primary="$1" fallback="$2" out="" timeout="${STARLINE_REFRESH_TIMEOUT:-45}"
+  # 180s timeout accommodates ccusage cold-start on heavy users (first
+  # LiteLLM price fetch + scanning tens of thousands of jsonl lines can
+  # take 60-90s). run_json is ONLY ever called from refresh_cache_async,
+  # so it runs in a detached background subshell — the statusline render
+  # itself never blocks on this timeout.
+  local primary="$1" fallback="$2" out="" timeout="${STARLINE_REFRESH_TIMEOUT:-180}"
   out=$(timed_eval "$timeout" "$primary" 2>/dev/null || true)
   if [ -n "$out" ] && valid_json "$out"; then printf '%s' "$out"; return; fi
   out=$(timed_eval "$timeout" "$fallback" 2>/dev/null || true)
@@ -95,12 +100,23 @@ refresh_cache_async() {
   fi
   [ -f "$lock" ] && return
   : > "$lock"
+  # `disown` + stdout/stderr to /dev/null + stdin from /dev/null keeps the
+  # background worker fully detached so bash's `$(...)` command substitution
+  # in gc_json returns as soon as the worker forks — the statusline command
+  # never blocks waiting for ccusage / node to complete.
   (
     trap 'rm -f "$lock"' EXIT
     local out
     out=$(run_json "$primary" "$fallback")
-    if valid_json "$out"; then printf '%s' "$out" > "$file"; fi
-  ) >/dev/null 2>&1 &
+    # Only write the cache if we got a non-empty, valid JSON with actual
+    # content. A partial / timed-out ccusage run that yields
+    # `{"totalCost":0}` for a user who actually spent hundreds today is
+    # worse than no cache — skip the write, next tick retries.
+    if valid_json "$out" && [ "$(printf '%s' "$out" | tr -d '[:space:]')" != '{}' ]; then
+      printf '%s' "$out" > "$file"
+    fi
+  ) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
 }
 
 gc_json() {
@@ -116,20 +132,25 @@ gc_json() {
     rm -f "$lock"
   fi
 
+  # Cache HIT — return the cached value immediately. If stale (past soft TTL
+  # but under hard TTL), kick off a background refresh. If blown past hard
+  # TTL, *still* return the stale value synchronously and refresh in the
+  # background — never block the statusline render on network I/O, even on
+  # a very stale cache. The previous sync-refresh-on-hard-ttl path could
+  # stall for tens of seconds on a ccusage cold start and make Claude Code
+  # time out the entire statusline command (user sees an empty bar).
   if [ -f "$file" ]; then
     age=$((now - $(mtime "$file")))
-    if [ "$age" -ge "$hard_ttl" ]; then
-      out=$(run_json "$primary" "$fallback")
-      if valid_json "$out"; then
-        printf '%s' "$out" > "$file"; printf '%s' "$out"; return
-      fi
-    elif [ "$age" -ge "$ttl" ]; then
+    if [ "$age" -ge "$ttl" ]; then
       refresh_cache_async "$file" "$lock" "$primary" "$fallback" "$stale_lock_secs"
     fi
     cat "$file"; return
   fi
-  out=$(run_json "$primary" "$fallback")
-  if valid_json "$out"; then printf '%s' "$out" > "$file"; printf '%s' "$out"; return; fi
+
+  # Cache MISS — this is the cold-start / new-window path. Never block here
+  # either. Fire the refresh into the background and return an empty JSON
+  # object so the render completes in milliseconds. The next tick (cursor
+  # move, model response, timer) will read the now-populated cache.
   refresh_cache_async "$file" "$lock" "$primary" "$fallback" "$stale_lock_secs"
   printf '{}'
 }

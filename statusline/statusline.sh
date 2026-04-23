@@ -191,22 +191,34 @@ TD=$(date +%Y%m%d)
 D30=$(date -v-30d +%Y%m%d 2>/dev/null || date -d '30 days ago' +%Y%m%d 2>/dev/null)
 
 # Graceful degradation when ccusage is missing: still render quota + session.
+#
+# IMPORTANT: never fall back to `ccusage --offline`. Its embedded price table
+# ships with whatever ccusage release the user installed; new Anthropic /
+# OpenAI models (Opus 4.7, newer Sonnet/Haiku, GPT-5.x) are priced at ~0 in
+# that table and undercount real usage by 50×–150×. If the online fetch
+# fails, poison cache with the wrong number is strictly worse than showing
+# the previous stale-but-correct value. So BOTH primary and fallback are
+# online — primary gets one shot, fallback is a retry, neither is offline.
+#
+# LOG_LEVEL=0 silences ccusage's stdout "[ccusage] ℹ Loaded pricing..." log
+# on cold start; without it, the JSON validation in run_json would fail and
+# silently trigger the fallback branch (which used to mean offline → poison).
 CT='{}'; XT='{}'; C3='{}'; X3='{}'
 if [ -n "$CCUSAGE_BIN" ]; then
   CT=$(gc_json "claude_today_${TD}" 90 \
-    "\"$CCUSAGE_BIN\" daily --json --breakdown --since $TD" \
-    "\"$CCUSAGE_BIN\" daily --json --breakdown --since $TD --offline")
+    "LOG_LEVEL=0 \"$CCUSAGE_BIN\" daily --json --breakdown --since $TD" \
+    "LOG_LEVEL=0 \"$CCUSAGE_BIN\" daily --json --breakdown --since $TD")
   C3=$(gc_json "claude_30d_${TD}" 600 \
-    "\"$CCUSAGE_BIN\" daily --json --breakdown --since $D30" \
-    "\"$CCUSAGE_BIN\" daily --json --breakdown --since $D30 --offline")
+    "LOG_LEVEL=0 \"$CCUSAGE_BIN\" daily --json --breakdown --since $D30" \
+    "LOG_LEVEL=0 \"$CCUSAGE_BIN\" daily --json --breakdown --since $D30")
 fi
 if [ -n "$CODEX_USAGE_BIN" ]; then
   XT=$(gc_json "codex_today_${TD}" 90 \
-    "\"$CODEX_USAGE_BIN\" daily --json --since $TD" \
-    "\"$CODEX_USAGE_BIN\" daily --json --since $TD --offline")
+    "LOG_LEVEL=0 \"$CODEX_USAGE_BIN\" daily --json --since $TD" \
+    "LOG_LEVEL=0 \"$CODEX_USAGE_BIN\" daily --json --since $TD")
   X3=$(gc_json "codex_30d_${TD}" 600 \
-    "\"$CODEX_USAGE_BIN\" daily --json --since $D30" \
-    "\"$CODEX_USAGE_BIN\" daily --json --since $D30 --offline")
+    "LOG_LEVEL=0 \"$CODEX_USAGE_BIN\" daily --json --since $D30" \
+    "LOG_LEVEL=0 \"$CODEX_USAGE_BIN\" daily --json --since $D30")
 fi
 
 XR=$(gc_json "codex_rate_${TD}" 60 \
@@ -244,9 +256,12 @@ X7P=$(json_value "$XR" '.seven_day.used_percent' '""')
 WEEK_SECS=604800
 NOW=$(date +%s)
 cws=$(( (NOW / 3600) * 3600 - WEEK_SECS ))
+# Both primary and fallback are online (offline=0). claude_window's offline
+# mode relies on ccusage's embedded price table, which missing new models
+# makes the dollar total undercount by up to ~100× for heavy Opus users.
 CW=$(gc_json "claude_window_${cws}" 600 \
   "node \"$STARLINE_LIB/claude_window.mjs\" $cws 0" \
-  "node \"$STARLINE_LIB/claude_window.mjs\" $cws 1")
+  "node \"$STARLINE_LIB/claude_window.mjs\" $cws 0")
 
 cct=$(json_value "$CT" '.totals.totalCost' '0')
 cxt=$(json_value "$XT" '.totals.costUSD' '0')
